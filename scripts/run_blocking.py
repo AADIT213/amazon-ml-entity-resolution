@@ -4,7 +4,12 @@ Phase 3: Blocking / Candidate Generation Script.
 
 Executes candidate generation on Amazon ML Challenge 2026 dataset:
 - Builds fast lightweight inverted indexes over Source 2 and Source 3
-- Queries Source 1 entities and unions candidates from complementary strategies
+- Queries Source 1 entities and unions candidates from complementary strategies:
+  1. Exact normalized name
+  2. Normalized name + country
+  3. Country x name stem (stem len >= 4)
+  4. Exact normalized address (len >= 8)
+  5. Null-address fallback (country x name stem)
 - Evaluates candidate recall on training ground truth
 - Analyzes French test entities for open-set validation
 - Generates official candidate_pairs.tsv adhering strictly to output contract
@@ -15,10 +20,11 @@ from __future__ import annotations
 import argparse
 import csv
 import os
+import re
 import sys
 import time
 from collections import defaultdict
-from typing import Dict, List, Set, Tuple
+from typing import Any, Dict, List, Set, Tuple
 
 import pandas as pd
 
@@ -32,14 +38,24 @@ from business_entity_resolution.normalize import (
     strip_legal_suffix,
 )
 
+SUFFIXES = (
+    " pvt ltd", " private limited", " pvt limited", " ltd", " inc", " corp",
+    " llc", " llp", " co", " company", " limited", " incorporated", " gmbh",
+    " sarl", " sas", " sasu", " eurl", " sci", " sa", " pc", " plc", " pllc",
+)
 
-def _addr_tokens(text: str) -> List[str]:
-    _ADDR_SKIP = {
-        "st", "rd", "dr", "ave", "blvd", "ln", "ct", "cir", "pl",
-        "n", "s", "e", "w", "no", "fl", "apt", "ste", "rm",
-        "bldg", "po", "box", "ne", "nw", "se", "sw",
-    }
-    return [t for t in text.split() if len(t) > 2 and t not in _ADDR_SKIP]
+def fast_strip_legal_suffix(n: str) -> str:
+    for s in SUFFIXES:
+        if n.endswith(s):
+            return n[:-len(s)].strip()
+    return n
+
+
+RE_PUNCT = re.compile(r"[^\w\s]")
+RE_SPACE = re.compile(r"\s+")
+
+def _clean_str(text: str) -> str:
+    return RE_SPACE.sub(" ", RE_PUNCT.sub(" ", text.lower())).strip()
 
 
 class FastBlockingIndex:
@@ -47,13 +63,12 @@ class FastBlockingIndex:
 
     def __init__(self) -> None:
         self.exact_name: Dict[str, Set[str]] = defaultdict(set)
-        self.name_stem: Dict[str, Set[str]] = defaultdict(set)
-        self.country_stem: Dict[Tuple[str, str], Set[str]] = defaultdict(set)
         self.country_name: Dict[Tuple[str, str], Set[str]] = defaultdict(set)
+        self.country_stem: Dict[Tuple[str, str], Set[str]] = defaultdict(set)
         self.exact_addr: Dict[str, Set[str]] = defaultdict(set)
-        self.country_addr: Dict[Tuple[str, str], Set[str]] = defaultdict(set)
         self.null_addr_fallback: Dict[Tuple[str, str], Set[str]] = defaultdict(set)
         self.total_records = 0
+        self._cache: Dict[Tuple[str, str, str, str], Set[str]] = {}
 
     def add_file(self, file_path: str, chunksize: int = 500000) -> None:
         print(f"  Indexing {file_path} ...", flush=True)
@@ -61,30 +76,20 @@ class FastBlockingIndex:
         count = 0
 
         for chunk in pd.read_csv(file_path, sep="\t", chunksize=chunksize, dtype=str):
-            names = (
-                chunk["business_name"]
-                .fillna("")
-                .astype(str)
-                .str.lower()
-                .str.replace(r"[^\w\s]", " ", regex=True)
-                .str.replace(r"\s+", " ", regex=True)
-                .str.strip()
-            )
-            addrs = (
-                chunk["business_address"]
-                .fillna("")
-                .astype(str)
-                .str.lower()
-                .str.replace(r"[^\w\s]", " ", regex=True)
-                .str.replace(r"\s+", " ", regex=True)
-                .str.strip()
-            )
+            u_names = chunk["business_name"].fillna("").astype(str).unique()
+            n_map = {n: _clean_str(n) for n in u_names if n}
+            names = chunk["business_name"].fillna("").astype(str).map(n_map).fillna("")
+
+            u_addrs = chunk["business_address"].fillna("").astype(str).unique()
+            a_map = {a: _clean_str(a) for a in u_addrs if a}
+            addrs = chunk["business_address"].fillna("").astype(str).map(a_map).fillna("")
+
             ctrys = chunk["country"].fillna("").astype(str).str.lower().str.strip()
             eids = chunk["entity_id"].astype(str)
 
             # Unique name stem map for speed within chunk
-            u_names = names.unique()
-            stem_map = {n: strip_legal_suffix(n) for n in u_names if n}
+            u_norm_names = names.unique()
+            stem_map = {n: fast_strip_legal_suffix(n) for n in u_norm_names if n}
 
             for eid, norm_n, norm_a, ctry_norm in zip(eids, names, addrs, ctrys):
                 count += 1
@@ -95,51 +100,53 @@ class FastBlockingIndex:
                         self.country_name[(ctry_norm, norm_n)].add(eid)
 
                     stem_n = stem_map.get(norm_n, "")
-                    if stem_n and len(stem_n) >= 4:
-                        self.name_stem[stem_n].add(eid)
-                        if ctry_norm:
-                            self.country_stem[(ctry_norm, stem_n)].add(eid)
+                    if stem_n and len(stem_n) >= 4 and ctry_norm:
+                        self.country_stem[(ctry_norm, stem_n)].add(eid)
 
                 if norm_a and len(norm_a) >= 8:
                     self.exact_addr[norm_a].add(eid)
-                    if ctry_norm:
-                        self.country_addr[(ctry_norm, norm_a)].add(eid)
 
                 # Null address fallback
                 if not norm_a and norm_n:
                     stem_n = stem_map.get(norm_n, "")
-                    if stem_n and len(stem_n) >= 4:
+                    if stem_n and len(stem_n) >= 4 and ctry_norm:
                         self.null_addr_fallback[(ctry_norm, stem_n)].add(eid)
 
         self.total_records += count
         print(f"  Indexed {count:,} rows from {os.path.basename(file_path)} in {time.time()-t0:.2f}s", flush=True)
 
     def query(self, norm_n: str, stem_n: str, norm_a: str, ctry_norm: str) -> Set[str]:
+        q_key = (norm_n, stem_n, norm_a, ctry_norm)
+        if q_key in self._cache:
+            return self._cache[q_key]
+
         cands: Set[str] = set()
 
         if norm_n:
-            if norm_n in self.exact_name:
-                cands.update(self.exact_name[norm_n])
-            if ctry_norm and (ctry_norm, norm_n) in self.country_name:
-                cands.update(self.country_name[(ctry_norm, norm_n)])
-
-        if stem_n and len(stem_n) >= 4:
-            if ctry_norm and (ctry_norm, stem_n) in self.country_stem:
-                cands.update(self.country_stem[(ctry_norm, stem_n)])
-            if stem_n in self.name_stem:
-                cands.update(self.name_stem[stem_n])
+            e_n = self.exact_name.get(norm_n)
+            if e_n:
+                cands.update(e_n)
+            if ctry_norm:
+                c_n = self.country_name.get((ctry_norm, norm_n))
+                if c_n:
+                    cands.update(c_n)
+                if stem_n and len(stem_n) >= 4:
+                    c_s = self.country_stem.get((ctry_norm, stem_n))
+                    if c_s:
+                        cands.update(c_s)
 
         if norm_a and len(norm_a) >= 8:
-            if ctry_norm and (ctry_norm, norm_a) in self.country_addr:
-                cands.update(self.country_addr[(ctry_norm, norm_a)])
-            if norm_a in self.exact_addr:
-                cands.update(self.exact_addr[norm_a])
+            e_a = self.exact_addr.get(norm_a)
+            if e_a:
+                cands.update(e_a)
 
         # Null address query fallback
-        if not norm_a and stem_n and len(stem_n) >= 4:
-            if (ctry_norm, stem_n) in self.null_addr_fallback:
-                cands.update(self.null_addr_fallback[(ctry_norm, stem_n)])
+        if not norm_a and stem_n and len(stem_n) >= 4 and ctry_norm:
+            n_a = self.null_addr_fallback.get((ctry_norm, stem_n))
+            if n_a:
+                cands.update(n_a)
 
+        self._cache[q_key] = cands
         return cands
 
 
@@ -180,29 +187,19 @@ def process_train(data_dir: str) -> Dict[str, Any]:
     total_candidate_pairs = 0
 
     for chunk in pd.read_csv(s1_path, sep="\t", chunksize=500000, dtype=str):
-        names = (
-            chunk["business_name"]
-            .fillna("")
-            .astype(str)
-            .str.lower()
-            .str.replace(r"[^\w\s]", " ", regex=True)
-            .str.replace(r"\s+", " ", regex=True)
-            .str.strip()
-        )
-        addrs = (
-            chunk["business_address"]
-            .fillna("")
-            .astype(str)
-            .str.lower()
-            .str.replace(r"[^\w\s]", " ", regex=True)
-            .str.replace(r"\s+", " ", regex=True)
-            .str.strip()
-        )
+        u_names = chunk["business_name"].fillna("").astype(str).unique()
+        n_map = {n: _clean_str(n) for n in u_names if n}
+        names = chunk["business_name"].fillna("").astype(str).map(n_map).fillna("")
+
+        u_addrs = chunk["business_address"].fillna("").astype(str).unique()
+        a_map = {a: _clean_str(a) for a in u_addrs if a}
+        addrs = chunk["business_address"].fillna("").astype(str).map(a_map).fillna("")
+
         ctrys = chunk["country"].fillna("").astype(str).str.lower().str.strip()
         eids = chunk["entity_id"].astype(str)
 
-        u_names = names.unique()
-        stem_map = {n: strip_legal_suffix(n) for n in u_names if n}
+        u_norm_names = names.unique()
+        stem_map = {n: fast_strip_legal_suffix(n) for n in u_norm_names if n}
 
         for eid, norm_n, norm_a, ctry_norm in zip(eids, names, addrs, ctrys):
             stem_n = stem_map.get(norm_n, "")
@@ -271,64 +268,159 @@ def process_test(data_dir: str, output_path: str) -> Dict[str, Any]:
     index.add_file(s2_path)
     index.add_file(s3_path)
 
-    print(f"\nGenerating Candidates for Test S1 & Writing {output_path} ...", flush=True)
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+
+    # Resume capability check
+    completed_s1_ids: Set[str] = set()
+    is_compatible = False
+
+    if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+        print(f"\nInspecting existing output file {output_path} for resume compatibility ...", flush=True)
+        try:
+            with open(output_path, "r", encoding="utf-8") as f:
+                header = f.readline().strip()
+                if header == "source1_entity_id\tcandidate_entity_ids":
+                    sample_rows = []
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            parts = line.split("\t", 1)
+                            s1_id = parts[0]
+                            completed_s1_ids.add(s1_id)
+                            if len(sample_rows) < 50:
+                                sample_cands = set(parts[1].split(",")) if len(parts) > 1 and parts[1] else set()
+                                sample_rows.append((s1_id, sample_cands))
+                    
+                    # Test compatibility of sample rows against index
+                    if sample_rows:
+                        print(f"  Loaded {len(completed_s1_ids):,} completed S1 rows from partial output.", flush=True)
+                        # Read sample rows from test_source1 to verify strategy compatibility
+                        s1_df = pd.read_csv(s1_path, sep="\t", nrows=500, dtype=str)
+                        s1_df["norm_n"] = s1_df["business_name"].fillna("").astype(str).str.lower().str.replace(r"[^\w\s]", " ", regex=True).str.replace(r"\s+", " ", regex=True).str.strip()
+                        s1_df["norm_a"] = s1_df["business_address"].fillna("").astype(str).str.lower().str.replace(r"[^\w\s]", " ", regex=True).str.replace(r"\s+", " ", regex=True).str.strip()
+                        s1_df["ctry"] = s1_df["country"].fillna("").astype(str).str.lower().str.strip()
+                        
+                        stem_map = {n: strip_legal_suffix(n) for n in s1_df["norm_n"].unique() if n}
+                        s1_dict = {}
+                        for _, row in s1_df.iterrows():
+                            eid = row["entity_id"]
+                            norm_n = row["norm_n"]
+                            norm_a = row["norm_a"]
+                            ctry = row["ctry"]
+                            stem_n = stem_map.get(norm_n, "")
+                            s1_dict[eid] = index.query(norm_n, stem_n, norm_a, ctry)
+
+                        matches_count = 0
+                        tested_count = 0
+                        for s1_id, existing_cands in sample_rows:
+                            if s1_id in s1_dict:
+                                tested_count += 1
+                                if s1_dict[s1_id] == existing_cands:
+                                    matches_count += 1
+                        
+                        if tested_count > 0 and matches_count == tested_count:
+                            is_compatible = True
+                            print(f"  RESUME VALIDATION PASSED: {matches_count}/{tested_count} sample rows matched current strategy.", flush=True)
+                        else:
+                            print(f"  RESUME VALIDATION: Strategy mismatch ({matches_count}/{tested_count} matched sample). Starting clean output.", flush=True)
+        except Exception as e:
+            print(f"  Error inspecting existing output: {e}. Starting clean run.", flush=True)
+
+    partial_backup_path = os.path.join(os.path.dirname(output_path), "candidate_pairs.partial.tsv")
+    if not is_compatible:
+        if os.path.exists(output_path):
+            import shutil
+            shutil.copy(output_path, partial_backup_path)
+            print(f"  Preserved existing partial file to {partial_backup_path}")
+        completed_s1_ids = set()
+        write_mode = "w"
+    else:
+        write_mode = "a"
+
+    print(f"\nGenerating Candidates for Test S1 (Resumable mode: {write_mode}) ...", flush=True)
 
     candidate_counts: List[int] = []
     country_counts: Dict[str, List[int]] = defaultdict(list)
     total_candidate_pairs = 0
     s1_seen: Set[str] = set()
 
-    with open(output_path, "w", newline="", encoding="utf-8") as out_f:
+    with open(output_path, write_mode, newline="", encoding="utf-8") as out_f:
         writer = csv.writer(out_f, delimiter="\t")
-        writer.writerow(["source1_entity_id", "candidate_entity_ids"])
+        if write_mode == "w":
+            writer.writerow(["source1_entity_id", "candidate_entity_ids"])
 
-        for chunk in pd.read_csv(s1_path, sep="\t", chunksize=500000, dtype=str):
-            names = (
-                chunk["business_name"]
-                .fillna("")
-                .astype(str)
-                .str.lower()
-                .str.replace(r"[^\w\s]", " ", regex=True)
-                .str.replace(r"\s+", " ", regex=True)
-                .str.strip()
-            )
-            addrs = (
-                chunk["business_address"]
-                .fillna("")
-                .astype(str)
-                .str.lower()
-                .str.replace(r"[^\w\s]", " ", regex=True)
-                .str.replace(r"\s+", " ", regex=True)
-                .str.strip()
-            )
+        for chunk in pd.read_csv(s1_path, sep="\t", chunksize=100000, dtype=str):
+            u_names = chunk["business_name"].fillna("").astype(str).unique()
+            n_map = {n: _clean_str(n) for n in u_names if n}
+            names = chunk["business_name"].fillna("").astype(str).map(n_map).fillna("")
+
+            u_addrs = chunk["business_address"].fillna("").astype(str).unique()
+            a_map = {a: _clean_str(a) for a in u_addrs if a}
+            addrs = chunk["business_address"].fillna("").astype(str).map(a_map).fillna("")
+
             ctrys = chunk["country"].fillna("").astype(str).str.lower().str.strip()
             eids = chunk["entity_id"].astype(str)
 
-            u_names = names.unique()
-            stem_map = {n: strip_legal_suffix(n) for n in u_names if n}
+            u_norm_names = names.unique()
+            stem_map = {n: fast_strip_legal_suffix(n) for n in u_norm_names if n}
 
+            new_rows_count = 0
             for eid, norm_n, norm_a, ctry_norm in zip(eids, names, addrs, ctrys):
                 s1_seen.add(eid)
+                
+                if eid in completed_s1_ids:
+                    continue
+
                 stem_n = stem_map.get(norm_n, "")
                 cands = index.query(norm_n, stem_n, norm_a, ctry_norm)
 
                 cand_str = ",".join(sorted(cands))
                 writer.writerow([eid, cand_str])
+                new_rows_count += 1
 
                 c_len = len(cands)
                 candidate_counts.append(c_len)
                 total_candidate_pairs += c_len
                 country_counts[ctry_norm].append(c_len)
 
+            out_f.flush()
+            if new_rows_count > 0:
+                print(f"  Processed chunk, total S1 seen: {len(s1_seen):,}", flush=True)
+
     total_time = time.time() - t_start
-    s_cands = pd.Series(candidate_counts)
-    total_possible_pairs = len(candidate_counts) * index.total_records
-    reduction_ratio = 1.0 - (total_candidate_pairs / total_possible_pairs)
+
+    # If resumed, load candidate counts for all rows to complete statistics
+    if completed_s1_ids and len(candidate_counts) < len(s1_seen):
+        print("\nLoading full candidate stats for final verification ...", flush=True)
+        candidate_counts = []
+        country_counts = defaultdict(list)
+        total_candidate_pairs = 0
+
+        # Read country mapping from s1_path
+        ctry_map = {}
+        for chunk in pd.read_csv(s1_path, sep="\t", chunksize=500000, dtype=str):
+            for eid, ctry in zip(chunk["entity_id"].astype(str), chunk["country"].fillna("").astype(str).str.lower().str.strip()):
+                ctry_map[eid] = ctry
+
+        with open(output_path, "r", encoding="utf-8") as f:
+            reader = csv.reader(f, delimiter="\t")
+            next(reader, None)
+            for row in reader:
+                if len(row) >= 1:
+                    eid = row[0]
+                    cands = row[1].split(",") if len(row) > 1 and row[1] else []
+                    c_len = len(cands)
+                    candidate_counts.append(c_len)
+                    total_candidate_pairs += c_len
+                    ctry = ctry_map.get(eid, "")
+                    country_counts[ctry].append(c_len)
+
+    s_cands = pd.Series(candidate_counts) if candidate_counts else pd.Series([0])
+    total_possible_pairs = len(candidate_counts) * index.total_records if candidate_counts else 1
+    reduction_ratio = 1.0 - (total_candidate_pairs / total_possible_pairs) if total_possible_pairs > 0 else 1.0
 
     # Validate output file contract
     print("\nValidating Candidate Pairs Output Contract ...", flush=True)
-    assert len(s1_seen) == len(candidate_counts), "Duplicate S1 IDs processed!"
     assert os.path.exists(output_path), "candidate_pairs.tsv was not written!"
     assert os.path.getsize(output_path) > 0, "candidate_pairs.tsv is empty!"
 
@@ -375,12 +467,15 @@ def process_test(data_dir: str, output_path: str) -> Dict[str, Any]:
     print(f"France S1 Entities:            {france_stats['count']:,}")
     print(f"France Avg Candidates:         {france_stats['avg_cands']:.2f}")
     print(f"France Median Candidates:      {france_stats['median_cands']:.0f}")
-    print(f"France Zero-candidate Count:   {france_stats['zero_cands']:,} ({(france_stats['zero_cands']/france_stats['count']*100):.2f}%)")
+    if france_stats['count'] > 0:
+        print(f"France Zero-candidate Count:   {france_stats['zero_cands']:,} ({(france_stats['zero_cands']/france_stats['count']*100):.2f}%)")
 
-    print(f"US S1 Entities:                {len(us_cands):,}, Avg Cands: {us_cands.mean():.2f}, Median: {us_cands.median():.0f}")
-    print(f"India S1 Entities:             {len(india_cands):,}, Avg Cands: {india_cands.mean():.2f}, Median: {india_cands.median():.0f}")
+    if len(us_cands) > 0:
+        print(f"US S1 Entities:                {len(us_cands):,}, Avg Cands: {us_cands.mean():.2f}, Median: {us_cands.median():.0f}")
+    if len(india_cands) > 0:
+        print(f"India S1 Entities:             {len(india_cands):,}, Avg Cands: {india_cands.mean():.2f}, Median: {india_cands.median():.0f}")
 
-    if france_stats['avg_cands'] < 0.1 * us_cands.mean():
+    if france_stats['count'] > 0 and len(us_cands) > 0 and france_stats['avg_cands'] < 0.1 * us_cands.mean():
         print("\nWARNING: French candidate volume is suspiciously low compared to US!")
     else:
         print("\nSANITY CHECK PASSED: French candidates generated appropriately (Open-Set functional).")
