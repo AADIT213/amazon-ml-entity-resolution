@@ -58,6 +58,40 @@ def _clean_str(text: str) -> str:
     return RE_SPACE.sub(" ", RE_PUNCT.sub(" ", text.lower())).strip()
 
 
+STOPWORDS = {"and", "of", "the", "in", "for", "on", "at", "to", "a", "an", "is", "by", "with", "co", "corp", "inc", "ltd", "llc", "services", "center", "solutions", "technologies", "group", "enterprises", "holdings", "private", "limited"}
+
+_CACHE_SORTED: Dict[str, str] = {}
+
+def sorted_stem_key(stem: str) -> str:
+    res = _CACHE_SORTED.get(stem)
+    if res is not None:
+        return res
+    parts = [t for t in stem.split() if t not in STOPWORDS]
+    if len(parts) <= 1:
+        parts = stem.split()
+    if not parts:
+        _CACHE_SORTED[stem] = ""
+        return ""
+    parts.sort()
+    res = " ".join(parts)
+    final_res = res if len(res) >= 4 else ""
+    _CACHE_SORTED[stem] = final_res
+    return final_res
+
+_CACHE_ADDR_PREF: Dict[str, str] = {}
+
+def addr_prefix_10_key(addr: str) -> str:
+    res = _CACHE_ADDR_PREF.get(addr)
+    if res is not None:
+        return res
+    if len(addr) >= 14:
+        final_res = addr[:14].strip()
+    else:
+        final_res = ""
+    _CACHE_ADDR_PREF[addr] = final_res
+    return final_res
+
+
 class FastBlockingIndex:
     """Compact, high-speed inverted index for S2 and S3 records."""
 
@@ -65,7 +99,9 @@ class FastBlockingIndex:
         self.exact_name: Dict[str, Set[str]] = defaultdict(set)
         self.country_name: Dict[Tuple[str, str], Set[str]] = defaultdict(set)
         self.country_stem: Dict[Tuple[str, str], Set[str]] = defaultdict(set)
+        self.country_sorted_stem: Dict[Tuple[str, str], Set[str]] = defaultdict(set)
         self.exact_addr: Dict[str, Set[str]] = defaultdict(set)
+        self.country_addr_prefix: Dict[Tuple[str, str], Set[str]] = defaultdict(set)
         self.null_addr_fallback: Dict[Tuple[str, str], Set[str]] = defaultdict(set)
         self.total_records = 0
         self._cache: Dict[Tuple[str, str, str, str], Set[str]] = {}
@@ -87,9 +123,13 @@ class FastBlockingIndex:
             ctrys = chunk["country"].fillna("").astype(str).str.lower().str.strip()
             eids = chunk["entity_id"].astype(str)
 
-            # Unique name stem map for speed within chunk
+            # Unique maps for maximum speed per chunk
             u_norm_names = names.unique()
             stem_map = {n: fast_strip_legal_suffix(n) for n in u_norm_names if n}
+            sorted_map = {n: sorted_stem_key(stem_map[n]) for n in u_norm_names if n and stem_map.get(n)}
+
+            u_norm_addrs = addrs.unique()
+            ap_map = {a: addr_prefix_10_key(a) for a in u_norm_addrs if a}
 
             for eid, norm_n, norm_a, ctry_norm in zip(eids, names, addrs, ctrys):
                 count += 1
@@ -100,11 +140,20 @@ class FastBlockingIndex:
                         self.country_name[(ctry_norm, norm_n)].add(eid)
 
                     stem_n = stem_map.get(norm_n, "")
-                    if stem_n and len(stem_n) >= 4 and ctry_norm:
-                        self.country_stem[(ctry_norm, stem_n)].add(eid)
+                    if stem_n and ctry_norm:
+                        if len(stem_n) >= 4:
+                            self.country_stem[(ctry_norm, stem_n)].add(eid)
+                        
+                        s_key = sorted_map.get(norm_n, "")
+                        if s_key:
+                            self.country_sorted_stem[(ctry_norm, s_key)].add(eid)
 
                 if norm_a and len(norm_a) >= 8:
                     self.exact_addr[norm_a].add(eid)
+                    if ctry_norm:
+                        ap_key = ap_map.get(norm_a, "")
+                        if ap_key:
+                            self.country_addr_prefix[(ctry_norm, ap_key)].add(eid)
 
                 # Null address fallback
                 if not norm_a and norm_n:
@@ -130,15 +179,28 @@ class FastBlockingIndex:
                 c_n = self.country_name.get((ctry_norm, norm_n))
                 if c_n:
                     cands.update(c_n)
-                if stem_n and len(stem_n) >= 4:
-                    c_s = self.country_stem.get((ctry_norm, stem_n))
-                    if c_s:
-                        cands.update(c_s)
+                if stem_n:
+                    if len(stem_n) >= 4:
+                        c_s = self.country_stem.get((ctry_norm, stem_n))
+                        if c_s:
+                            cands.update(c_s)
+
+                    s_key = sorted_stem_key(stem_n)
+                    if s_key:
+                        c_ss = self.country_sorted_stem.get((ctry_norm, s_key))
+                        if c_ss:
+                            cands.update(c_ss)
 
         if norm_a and len(norm_a) >= 8:
             e_a = self.exact_addr.get(norm_a)
             if e_a:
                 cands.update(e_a)
+            if ctry_norm:
+                ap_key = addr_prefix_10_key(norm_a)
+                if ap_key:
+                    c_ap = self.country_addr_prefix.get((ctry_norm, ap_key))
+                    if c_ap:
+                        cands.update(c_ap)
 
         # Null address query fallback
         if not norm_a and stem_n and len(stem_n) >= 4 and ctry_norm:
