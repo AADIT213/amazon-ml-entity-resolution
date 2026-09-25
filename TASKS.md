@@ -4,8 +4,8 @@ Status legend: `TODO` / `IN PROGRESS` / `DONE` / `BLOCKED`
 
 | # | Phase | Priority | Depends on | Expected output | Status |
 |---|-------|----------|------------|------------------|--------|
-| 0 | Repository bootstrap (docs, env, git checkpoint) | P0 | — | PRD/TRD/AGENTS/TASKS committed, `.venv` ready | IN PROGRESS |
-| 1 | Dataset audit (real data only) | P0 | 0 | Audit report: row counts, schema, missingness, duplicate IDs, country distribution, name/address noise, ground-truth match cardinality, singleton/one/multi-match distribution, positive pair count, candidate-generation & leakage implications | TODO |
+| 0 | Repository bootstrap (docs, env, git checkpoint) | P0 | — | PRD/TRD/AGENTS/TASKS committed, `.venv` ready | DONE |
+| 1 | Dataset audit (real data only) | P0 | 0 | Audit report: row counts, schema, missingness, duplicate IDs, country distribution, name/address noise, ground-truth match cardinality, singleton/one/multi-match distribution, positive pair count, candidate-generation & leakage implications | DONE |
 | 2 | Preprocessing / normalization | P0 | 1 | Deterministic name/address normalization functions + unit tests | TODO |
 | 3 | Candidate generation (blocking) | P0 | 2 | Blocking implementation, measured candidate recall on train, `candidate_pairs.tsv` contract defined | TODO |
 | 4 | Feature engineering | P0 | 3 | Name/address/cross-field pair features + unit tests | TODO |
