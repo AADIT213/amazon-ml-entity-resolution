@@ -45,9 +45,7 @@ Out of scope: anything requiring external data or services (see §6).
 - No external internet-based business identity lookup.
 - No external data augmentation.
 - Only challenge-provided data may be used.
-- Final model must satisfy the challenge's stated license (MIT/Apache 2.0) and parameter
-  limit — **confirm the exact parameter cap from the official PS/resources before model
-  selection**, since it is not restated numerically in this document.
+- Final model must be MIT/Apache 2.0 licensed and use at most 8 billion parameters.
 
 ## 7. Evaluation
 - Official metric: **macro F0.5** (precision-heavy — false merges are costly).
