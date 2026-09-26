@@ -28,6 +28,18 @@ from .blocking import (
     AddressTokenBlock,
     CountryNameStemBlock,
 )
+from .features import (
+    LIGHTWEIGHT_FEATURE_NAMES,
+    compute_lightweight_batch_features,
+    compute_lightweight_pair_features,
+    jaccard_similarity,
+    extract_numeric_tokens,
+)
+from .model import (
+    BaselineMatchClassifier,
+    compute_f_beta,
+    compute_classification_metrics,
+)
 
 __all__ = [
     "clean_whitespace",
@@ -49,4 +61,12 @@ __all__ = [
     "CountryExactNameBlock",
     "AddressTokenBlock",
     "CountryNameStemBlock",
+    "LIGHTWEIGHT_FEATURE_NAMES",
+    "compute_lightweight_batch_features",
+    "compute_lightweight_pair_features",
+    "jaccard_similarity",
+    "extract_numeric_tokens",
+    "BaselineMatchClassifier",
+    "compute_f_beta",
+    "compute_classification_metrics",
 ]

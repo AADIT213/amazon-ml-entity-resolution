@@ -139,3 +139,116 @@ The finalized blocking set achieves high recall while maintaining a compact inde
 - **Validation Result**: **PASS — no blocking issues found. Safe to submit.**
 - **ID Existence Check**: Verified all 334,668,988 candidate IDs against `test_source2.tsv` (4,887,273 rows) and `test_source3.tsv` (5,082,316 rows). 100% of candidate IDs exist and are valid.
 
+---
+
+## Phase 4: Pair Feature Engineering (Sample Benchmark)
+
+- **Date**: 2026-09-26
+- **Branch**: `feat/features`
+- **Script**: `scripts/run_features.py`
+- **Modules**:
+  - `src/business_entity_resolution/features.py` — lightweight, vectorized pair feature extractor
+- **Test Suite**: `tests/test_features.py` (8/8 tests passing), total test suite 77/77 passing
+- **Output Sample File**: `output/features_sample_10000.tsv` (840.6 KB, 10,000 rows)
+
+### 1. Lightweight Feature Set (12 Features)
+- **Name Features (5)**:
+  1. `exact_name_match`: Exact normalized name equality (1.0 or 0.0)
+  2. `name_token_jaccard`: Word token set Jaccard similarity [0, 1]
+  3. `name_char_similarity`: Normalized Levenshtein character similarity [0, 1]
+  4. `name_len_diff`: Absolute difference in string length
+  5. `name_token_count_diff`: Absolute difference in token counts
+- **Address Features (4)**:
+  6. `exact_addr_match`: Exact normalized address equality (1.0 or 0.0)
+  7. `addr_token_jaccard`: Address word token set Jaccard similarity [0, 1]
+  8. `addr_numeric_overlap`: Jaccard overlap of numeric digit groups (e.g. house/pin numbers)
+  9. `addr_len_diff`: Absolute difference in address length
+- **Cross-Field Features (3)**:
+  10. `country_match`: Country equality (1.0 or 0.0)
+  11. `missing_name_flag`: Flag indicating missing/empty name on either entity
+  12. `missing_addr_flag`: Flag indicating missing/empty address on either entity
+
+### 2. Measured 10,000-Pair Benchmark Metrics
+- **Pairs Processed**: 10,000
+- **Referenced Unique Entities**: 10,004 (4 S1, 5,122 S2, 4,878 S3)
+- **Candidate Streaming Time**: 0.005s
+- **Entity Loading & Normalization Time**: 14.77s
+- **Feature Computation Time**: 0.2603s
+- **Feature Extraction Throughput**: **38,418.1 pairs/second**
+- **Total Benchmark Runtime**: 15.14s
+- **Peak Process Memory**: ~1.62 MB (feature matrix)
+---
+
+## Phase 5: Baseline Pair Matching Model (10,000-S1 Streaming Benchmark)
+
+- **Date**: 2026-09-26
+- **Branch**: `feat/model`
+- **Script**: `scripts/train_baseline.py`
+- **Modules**:
+  - `src/business_entity_resolution/model.py` — `BaselineMatchClassifier` (balanced Logistic Regression)
+  - `src/business_entity_resolution/features.py` — 12 lightweight features
+- **Test Suite**: `tests/test_model.py` (5/5 tests passing), total test suite 82/82 passing
+- **Model Artifact**: `models/baseline_logreg.joblib` (1.3 KB)
+
+### 1. Training Dataset & Strategy
+- **S1 Sample**: 10,000 Source 1 entities (deterministic uniform sample, seed 42)
+- **Candidate Generator**: Improved Phase 3 blocking strategies (7 complementary keys: exact name, country stem, exact addr, country sorted stem, country addr prefix, null addr fallback)
+- **Ground Truth Matches**: 34,768 true positives loaded for sampled S1 entities
+- **Candidate Generation Yield**:
+  * Positive candidates: 24,320
+  * Negative candidates: 66,066 (capped at max 15 negatives / S1 entity)
+  * Total candidate pairs: 90,386
+  * Positive / Negative ratio: 1 : 2.72
+  * Unique target entities retained: 462,530
+- **Entity-Grouped Split (80/20)**:
+  * Train: 8,000 S1 entities -> 72,211 pairs (19,474 pos / 52,737 neg)
+  * Validation: 2,000 S1 entities -> 18,175 pairs (4,846 pos / 13,329 neg)
+
+### 2. Feature Extraction & Model Training Throughput
+- **Feature Computation Time**: 1.6470s on 90,386 pairs (**54,879.6 pairs/sec**)
+- **Model Fit Time**: 0.1671s
+- **Peak Process Memory**: ~4.14 MB (feature matrix)
+- **Source 2 Scan Time**: 1,150.35s (5,034,616 rows)
+- **Source 3 Scan Time**: 1,393.64s (5,285,603 rows)
+- **Total Pipeline Runtime**: 2,552.16s (~42.5 min)
+
+### 3. Learned Feature Weights (Logistic Regression)
+| Feature Name | Category | Learned Coefficient |
+|---|---|---|
+| `addr_token_jaccard` | Address | **+3.3397** |
+| `name_token_jaccard` | Name | **+1.9717** |
+| `addr_numeric_overlap` | Address | **+1.7052** |
+| `name_char_similarity` | Name | **+0.8117** |
+| `missing_addr_flag` | Cross-field | **+0.6715** |
+| `addr_len_diff` | Address | +0.3879 |
+| `name_token_count_diff` | Name | +0.3769 |
+| `country_match` | Cross-field | +0.1319 |
+| `missing_name_flag` | Cross-field | +0.0000 |
+| `exact_name_match` | Name | -0.5137 |
+| `exact_addr_match` | Address | -0.5344 |
+| `name_len_diff` | Name | -0.5599 |
+
+### 4. Validation Split Threshold / F0.5 Evaluation Table
+Evaluated on held-out 20% validation split (18,175 candidate pairs across 2,000 S1 entities):
+
+| Threshold | Precision | Recall | **F0.5** | Predicted Matches | TP | FP | FN | TN |
+|---|---|---|---|---|---|---|---|---|
+| 0.10 | 72.97% | 99.53% | 77.08% | 6,610 | 4,823 | 1,787 | 23 | 11,542 |
+| 0.20 | 78.32% | 99.01% | 81.74% | 6,126 | 4,798 | 1,328 | 48 | 12,001 |
+| 0.30 | 81.23% | 98.06% | 84.12% | 5,850 | 4,752 | 1,098 | 94 | 12,231 |
+| 0.40 | 83.27% | 96.84% | 85.67% | 5,636 | 4,693 | 943 | 153 | 12,386 |
+| 0.50 | 85.06% | 95.30% | 86.93% | 5,429 | 4,618 | 811 | 228 | 12,518 |
+| 0.60 | 86.80% | 93.07% | 87.98% | 5,196 | 4,510 | 686 | 336 | 12,643 |
+| 0.70 | 89.01% | 90.94% | 89.39% | 4,951 | 4,407 | 544 | 439 | 12,785 |
+| 0.80 | 91.96% | 87.31% | 90.99% | 4,601 | 4,231 | 370 | 615 | 12,959 |
+| **0.90 (Optimal)** | **95.29%** | **81.88%** | **92.27%** | **4,164** | **3,968** | **196** | **878** | **13,133** |
+
+### 5. Optimal Baseline Performance Summary
+- **Optimal Probability Threshold**: **0.90**
+- **Validation Precision**: **95.29%**
+- **Validation Recall**: **81.88%**
+- **Validation F0.5 Score**: **92.27%**
+- **Confusion Matrix**: TP = 3,968, FP = 196, FN = 878, TN = 13,133
+
+
+
