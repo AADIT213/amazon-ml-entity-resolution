@@ -35,6 +35,11 @@ from .features import (
     jaccard_similarity,
     extract_numeric_tokens,
 )
+from .model import (
+    BaselineMatchClassifier,
+    compute_f_beta,
+    compute_classification_metrics,
+)
 
 __all__ = [
     "clean_whitespace",
@@ -61,4 +66,7 @@ __all__ = [
     "compute_lightweight_pair_features",
     "jaccard_similarity",
     "extract_numeric_tokens",
+    "BaselineMatchClassifier",
+    "compute_f_beta",
+    "compute_classification_metrics",
 ]
