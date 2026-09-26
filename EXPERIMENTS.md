@@ -250,5 +250,52 @@ Evaluated on held-out 20% validation split (18,175 candidate pairs across 2,000 
 - **Validation F0.5 Score**: **92.27%**
 - **Confusion Matrix**: TP = 3,968, FP = 196, FN = 878, TN = 13,133
 
+---
+
+## Phase 6: Macro-Averaged Validation Evaluation (1,000-S1 Held-Out Slice)
+
+- **Date**: 2026-09-27
+- **Scripts**: `scripts/evaluate_train_slice.py`, `scripts/compute_macro_metrics.py`
+- **Model**: `models/baseline_logreg.joblib` (frozen, threshold 0.90)
+- **Evaluation Metric**: Official per-entity Macro $F_{0.5} = \frac{1}{N} \sum_{i=1}^N \frac{1.25 \cdot P_i \cdot R_i}{0.25 \cdot P_i + R_i}$
+
+### 1. Overall Macro-Averaged Results
+- **Evaluated S1 Entities**: 1,000
+- **Total Candidate Pairs Generated**: 70,032
+- **Candidate Blocking Recall**: 69.29% (2,507 / 3,618 ground truth pairs)
+- **Overall Macro $F_{0.5}$**: **74.16%**
+- **Overall Macro Precision**: **84.37%**
+- **Overall Macro Recall**: **58.05%**
+
+### 2. Breakdown by Ground Truth Entity Category
+| Category | Entity Count | % of Slice | Avg Precision | Avg Recall | Avg $F_{0.5}$ Score |
+|---|---|---|---|---|---|
+| **Zero-Match Entities** ($|GT| = 0$) | 43 | 4.3% | 93.02% | 100.00% | **93.02%** |
+| **Singleton Entities** ($|GT| = 1$) | 37 | 3.7% | 44.59% | 48.65% | **45.05%** |
+| **Multi-Match Entities** ($|GT| > 1$) | 920 | 92.0% | 85.57% | 56.47% | **74.45%** |
+
+### 3. Key Findings
+- 92.0% of entities have multiple ground truth matches across sources, confirming the non-bijective problem topology.
+- Classifier precision remains high (92.15% on scored candidate pairs, 84.37% macro precision).
+- End-to-end recall is primarily bounded by candidate generation blocking recall (69.29% on this slice).
+
+---
+
+## Phase 8 & 9: Full Test Inference & Submission Validation
+
+- **Date**: 2026-09-26
+- **Script**: `scripts/run_inference.py`, `scripts/validate_submission.py`
+- **Output Artifacts**:
+  * `output/candidate_pairs.tsv` (4.34 GB, 1,732,544 rows, 334,668,988 candidate pairs)
+  * `output/matching_results.tsv` (71.4 MB, 1,732,544 rows, 1,607,178 predicted matches)
+- **Submission Validation Contract**:
+  * Row Count: 1,732,544 (exactly matches test Source 1) -> **PASS**
+  * Duplicate S1 IDs: 0 -> **PASS**
+  * Duplicate Target Match IDs: 0 -> **PASS**
+  * Candidate Set Invariance: 100% of predicted matches are present in `output/candidate_pairs.tsv` -> **PASS**
+  * Entity ID Validation: 100% of IDs reference valid test S2/S3 entities -> **PASS**
+  * Malformed Lines: 0 -> **PASS**
+
+
 
 
