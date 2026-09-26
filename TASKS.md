@@ -17,13 +17,13 @@ Status legend: `TODO` / `IN PROGRESS` / `DONE` / `BLOCKED`
 | 10 | Final packaging | P0 | 9 | README.md, METHODOLOGY.md, pinned requirements.txt, final ZIP | TODO |
 
 ## Immediate next actions (current checkpoint)
-1. Complete Phase 3 candidate generation: `output/candidate_pairs.tsv` generated and validated against full test dataset (1,732,544 test S1 entities).
-2. All 38,548,836 generated candidate IDs passed strict ID-existence validation (`validate_submission.py --check-ids`).
+1. Phase 3 Candidate Generation finalized: `output/candidate_pairs.tsv` generated with 75.40% train recall set and validated against full test dataset (1,732,544 test S1 entities).
+2. All 334,668,988 generated candidate IDs passed strict ID-existence validation (`validate_submission.py --check-ids`).
 3. Proceed to Phase 4 (Feature Engineering).
 
 ## Notes
-- Phase 3 generated complete candidate pairs file: 1,732,544 rows, 38.5M pairs, 40.12% train candidate recall, 99.9997% reduction ratio.
-- Open-set France test S1 candidate generation validated (259,452 France entities, avg 40.28 candidates/S1).
+- Phase 3 generated complete candidate pairs file: 1,732,544 rows, 334.67M candidate pairs, 75.40% train candidate recall, 99.99806% reduction ratio.
+- Open-set France test S1 candidate generation validated (259,452 France entities, avg 842.91 candidates/S1, 1.21% zero-candidate rate).
 - Confirm the official model parameter-limit number from the challenge resources before
   Phase 5 — it wasn't restated numerically in the tracker PDF and matters for model
   choice.

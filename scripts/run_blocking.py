@@ -96,15 +96,12 @@ class FastBlockingIndex:
     """Compact, high-speed inverted index for S2 and S3 records."""
 
     def __init__(self) -> None:
-        self.exact_name: Dict[str, Set[str]] = defaultdict(set)
-        self.country_name: Dict[Tuple[str, str], Set[str]] = defaultdict(set)
-        self.country_stem: Dict[Tuple[str, str], Set[str]] = defaultdict(set)
-        self.country_sorted_stem: Dict[Tuple[str, str], Set[str]] = defaultdict(set)
-        self.exact_addr: Dict[str, Set[str]] = defaultdict(set)
-        self.country_addr_prefix: Dict[Tuple[str, str], Set[str]] = defaultdict(set)
-        self.null_addr_fallback: Dict[Tuple[str, str], Set[str]] = defaultdict(set)
+        self.exact_name: Dict[str, List[str]] = defaultdict(list)
+        self.country_stem: Dict[str, List[str]] = defaultdict(list)
+        self.country_sorted_stem: Dict[str, List[str]] = defaultdict(list)
+        self.exact_addr: Dict[str, List[str]] = defaultdict(list)
+        self.country_addr_prefix: Dict[str, List[str]] = defaultdict(list)
         self.total_records = 0
-        self._cache: Dict[Tuple[str, str, str, str], Set[str]] = {}
 
     def add_file(self, file_path: str, chunksize: int = 500000) -> None:
         print(f"  Indexing {file_path} ...", flush=True)
@@ -135,61 +132,45 @@ class FastBlockingIndex:
                 count += 1
 
                 if norm_n:
-                    self.exact_name[norm_n].add(eid)
-                    if ctry_norm:
-                        self.country_name[(ctry_norm, norm_n)].add(eid)
+                    self.exact_name[norm_n].append(eid)
 
                     stem_n = stem_map.get(norm_n, "")
                     if stem_n and ctry_norm:
                         if len(stem_n) >= 4:
-                            self.country_stem[(ctry_norm, stem_n)].add(eid)
+                            self.country_stem[f"{ctry_norm}|{stem_n}"].append(eid)
                         
                         s_key = sorted_map.get(norm_n, "")
                         if s_key:
-                            self.country_sorted_stem[(ctry_norm, s_key)].add(eid)
+                            self.country_sorted_stem[f"{ctry_norm}|{s_key}"].append(eid)
 
                 if norm_a and len(norm_a) >= 8:
-                    self.exact_addr[norm_a].add(eid)
+                    self.exact_addr[norm_a].append(eid)
                     if ctry_norm:
                         ap_key = ap_map.get(norm_a, "")
                         if ap_key:
-                            self.country_addr_prefix[(ctry_norm, ap_key)].add(eid)
-
-                # Null address fallback
-                if not norm_a and norm_n:
-                    stem_n = stem_map.get(norm_n, "")
-                    if stem_n and len(stem_n) >= 4 and ctry_norm:
-                        self.null_addr_fallback[(ctry_norm, stem_n)].add(eid)
+                            self.country_addr_prefix[f"{ctry_norm}|{ap_key}"].append(eid)
 
         self.total_records += count
         print(f"  Indexed {count:,} rows from {os.path.basename(file_path)} in {time.time()-t0:.2f}s", flush=True)
 
     def query(self, norm_n: str, stem_n: str, norm_a: str, ctry_norm: str) -> Set[str]:
-        q_key = (norm_n, stem_n, norm_a, ctry_norm)
-        if q_key in self._cache:
-            return self._cache[q_key]
-
         cands: Set[str] = set()
 
         if norm_n:
             e_n = self.exact_name.get(norm_n)
             if e_n:
                 cands.update(e_n)
-            if ctry_norm:
-                c_n = self.country_name.get((ctry_norm, norm_n))
-                if c_n:
-                    cands.update(c_n)
-                if stem_n:
-                    if len(stem_n) >= 4:
-                        c_s = self.country_stem.get((ctry_norm, stem_n))
-                        if c_s:
-                            cands.update(c_s)
+            if ctry_norm and stem_n:
+                if len(stem_n) >= 4:
+                    c_s = self.country_stem.get(f"{ctry_norm}|{stem_n}")
+                    if c_s:
+                        cands.update(c_s)
 
-                    s_key = sorted_stem_key(stem_n)
-                    if s_key:
-                        c_ss = self.country_sorted_stem.get((ctry_norm, s_key))
-                        if c_ss:
-                            cands.update(c_ss)
+                s_key = sorted_stem_key(stem_n)
+                if s_key:
+                    c_ss = self.country_sorted_stem.get(f"{ctry_norm}|{s_key}")
+                    if c_ss:
+                        cands.update(c_ss)
 
         if norm_a and len(norm_a) >= 8:
             e_a = self.exact_addr.get(norm_a)
@@ -198,17 +179,10 @@ class FastBlockingIndex:
             if ctry_norm:
                 ap_key = addr_prefix_10_key(norm_a)
                 if ap_key:
-                    c_ap = self.country_addr_prefix.get((ctry_norm, ap_key))
+                    c_ap = self.country_addr_prefix.get(f"{ctry_norm}|{ap_key}")
                     if c_ap:
                         cands.update(c_ap)
 
-        # Null address query fallback
-        if not norm_a and stem_n and len(stem_n) >= 4 and ctry_norm:
-            n_a = self.null_addr_fallback.get((ctry_norm, stem_n))
-            if n_a:
-                cands.update(n_a)
-
-        self._cache[q_key] = cands
         return cands
 
 
@@ -332,79 +306,36 @@ def process_test(data_dir: str, output_path: str) -> Dict[str, Any]:
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
 
-    # Resume capability check
+    # Lightweight startup resume check
     completed_s1_ids: Set[str] = set()
-    is_compatible = False
+    write_mode = "w"
 
     if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-        print(f"\nInspecting existing output file {output_path} for resume compatibility ...", flush=True)
+        print(f"\nInspecting existing output file {output_path} for resume ...", flush=True)
         try:
             with open(output_path, "r", encoding="utf-8") as f:
                 header = f.readline().strip()
-                if header == "source1_entity_id\tcandidate_entity_ids":
-                    sample_rows = []
-                    for line in f:
-                        line = line.strip()
-                        if line:
-                            parts = line.split("\t", 1)
-                            s1_id = parts[0]
-                            completed_s1_ids.add(s1_id)
-                            if len(sample_rows) < 50:
-                                sample_cands = set(parts[1].split(",")) if len(parts) > 1 and parts[1] else set()
-                                sample_rows.append((s1_id, sample_cands))
-                    
-                    # Test compatibility of sample rows against index
-                    if sample_rows:
-                        print(f"  Loaded {len(completed_s1_ids):,} completed S1 rows from partial output.", flush=True)
-                        # Read sample rows from test_source1 to verify strategy compatibility
-                        s1_df = pd.read_csv(s1_path, sep="\t", nrows=500, dtype=str)
-                        s1_df["norm_n"] = s1_df["business_name"].fillna("").astype(str).str.lower().str.replace(r"[^\w\s]", " ", regex=True).str.replace(r"\s+", " ", regex=True).str.strip()
-                        s1_df["norm_a"] = s1_df["business_address"].fillna("").astype(str).str.lower().str.replace(r"[^\w\s]", " ", regex=True).str.replace(r"\s+", " ", regex=True).str.strip()
-                        s1_df["ctry"] = s1_df["country"].fillna("").astype(str).str.lower().str.strip()
-                        
-                        stem_map = {n: strip_legal_suffix(n) for n in s1_df["norm_n"].unique() if n}
-                        s1_dict = {}
-                        for _, row in s1_df.iterrows():
-                            eid = row["entity_id"]
-                            norm_n = row["norm_n"]
-                            norm_a = row["norm_a"]
-                            ctry = row["ctry"]
-                            stem_n = stem_map.get(norm_n, "")
-                            s1_dict[eid] = index.query(norm_n, stem_n, norm_a, ctry)
-
-                        matches_count = 0
-                        tested_count = 0
-                        for s1_id, existing_cands in sample_rows:
-                            if s1_id in s1_dict:
-                                tested_count += 1
-                                if s1_dict[s1_id] == existing_cands:
-                                    matches_count += 1
-                        
-                        if tested_count > 0 and matches_count == tested_count:
-                            is_compatible = True
-                            print(f"  RESUME VALIDATION PASSED: {matches_count}/{tested_count} sample rows matched current strategy.", flush=True)
-                        else:
-                            print(f"  RESUME VALIDATION: Strategy mismatch ({matches_count}/{tested_count} matched sample). Starting clean output.", flush=True)
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        s1_id = line.split("\t", 1)[0]
+                        completed_s1_ids.add(s1_id)
+            if completed_s1_ids:
+                print(f"  Loaded {len(completed_s1_ids):,} completed S1 rows. Resuming in append mode...", flush=True)
+                write_mode = "a"
         except Exception as e:
-            print(f"  Error inspecting existing output: {e}. Starting clean run.", flush=True)
+            print(f"  Error reading existing output: {e}. Starting fresh.", flush=True)
+            completed_s1_ids = set()
+            write_mode = "w"
 
-    partial_backup_path = os.path.join(os.path.dirname(output_path), "candidate_pairs.partial.tsv")
-    if not is_compatible:
-        if os.path.exists(output_path):
-            import shutil
-            shutil.copy(output_path, partial_backup_path)
-            print(f"  Preserved existing partial file to {partial_backup_path}")
-        completed_s1_ids = set()
-        write_mode = "w"
-    else:
-        write_mode = "a"
-
-    print(f"\nGenerating Candidates for Test S1 (Resumable mode: {write_mode}) ...", flush=True)
+    print(f"\nGenerating Candidates for Test S1 (Mode: {write_mode}) ...", flush=True)
 
     candidate_counts: List[int] = []
     country_counts: Dict[str, List[int]] = defaultdict(list)
     total_candidate_pairs = 0
     s1_seen: Set[str] = set()
+    rows_written_since_flush = 0
+    total_written = len(completed_s1_ids)
 
     with open(output_path, write_mode, newline="", encoding="utf-8") as out_f:
         writer = csv.writer(out_f, delimiter="\t")
@@ -426,7 +357,6 @@ def process_test(data_dir: str, output_path: str) -> Dict[str, Any]:
             u_norm_names = names.unique()
             stem_map = {n: fast_strip_legal_suffix(n) for n in u_norm_names if n}
 
-            new_rows_count = 0
             for eid, norm_n, norm_a, ctry_norm in zip(eids, names, addrs, ctrys):
                 s1_seen.add(eid)
                 
@@ -438,16 +368,23 @@ def process_test(data_dir: str, output_path: str) -> Dict[str, Any]:
 
                 cand_str = ",".join(sorted(cands))
                 writer.writerow([eid, cand_str])
-                new_rows_count += 1
+                completed_s1_ids.add(eid)
+                rows_written_since_flush += 1
+                total_written += 1
 
                 c_len = len(cands)
                 candidate_counts.append(c_len)
                 total_candidate_pairs += c_len
                 country_counts[ctry_norm].append(c_len)
 
+                if rows_written_since_flush >= 50000:
+                    out_f.flush()
+                    rows_written_since_flush = 0
+                    print(f"  Flushed 50,000 rows. Progress: {total_written:,} / 1,732,544 ({total_written/1732544*100:.1f}%)", flush=True)
+
             out_f.flush()
-            if new_rows_count > 0:
-                print(f"  Processed chunk, total S1 seen: {len(s1_seen):,}", flush=True)
+            if rows_written_since_flush > 0:
+                print(f"  Chunk completed. Progress: {total_written:,} / 1,732,544 ({total_written/1732544*100:.1f}%)", flush=True)
 
     total_time = time.time() - t_start
 
