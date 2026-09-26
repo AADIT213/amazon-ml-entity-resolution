@@ -139,3 +139,44 @@ The finalized blocking set achieves high recall while maintaining a compact inde
 - **Validation Result**: **PASS — no blocking issues found. Safe to submit.**
 - **ID Existence Check**: Verified all 334,668,988 candidate IDs against `test_source2.tsv` (4,887,273 rows) and `test_source3.tsv` (5,082,316 rows). 100% of candidate IDs exist and are valid.
 
+---
+
+## Phase 4: Pair Feature Engineering (Sample Benchmark)
+
+- **Date**: 2026-09-26
+- **Branch**: `feat/features`
+- **Script**: `scripts/run_features.py`
+- **Modules**:
+  - `src/business_entity_resolution/features.py` — lightweight, vectorized pair feature extractor
+- **Test Suite**: `tests/test_features.py` (8/8 tests passing), total test suite 77/77 passing
+- **Output Sample File**: `output/features_sample_10000.tsv` (840.6 KB, 10,000 rows)
+
+### 1. Lightweight Feature Set (12 Features)
+- **Name Features (5)**:
+  1. `exact_name_match`: Exact normalized name equality (1.0 or 0.0)
+  2. `name_token_jaccard`: Word token set Jaccard similarity [0, 1]
+  3. `name_char_similarity`: Normalized Levenshtein character similarity [0, 1]
+  4. `name_len_diff`: Absolute difference in string length
+  5. `name_token_count_diff`: Absolute difference in token counts
+- **Address Features (4)**:
+  6. `exact_addr_match`: Exact normalized address equality (1.0 or 0.0)
+  7. `addr_token_jaccard`: Address word token set Jaccard similarity [0, 1]
+  8. `addr_numeric_overlap`: Jaccard overlap of numeric digit groups (e.g. house/pin numbers)
+  9. `addr_len_diff`: Absolute difference in address length
+- **Cross-Field Features (3)**:
+  10. `country_match`: Country equality (1.0 or 0.0)
+  11. `missing_name_flag`: Flag indicating missing/empty name on either entity
+  12. `missing_addr_flag`: Flag indicating missing/empty address on either entity
+
+### 2. Measured 10,000-Pair Benchmark Metrics
+- **Pairs Processed**: 10,000
+- **Referenced Unique Entities**: 10,004 (4 S1, 5,122 S2, 4,878 S3)
+- **Candidate Streaming Time**: 0.005s
+- **Entity Loading & Normalization Time**: 14.77s
+- **Feature Computation Time**: 0.2603s
+- **Feature Extraction Throughput**: **38,418.1 pairs/second**
+- **Total Benchmark Runtime**: 15.14s
+- **Peak Process Memory**: ~1.62 MB (feature matrix)
+- **Data Integrity**: **100% valid** (0 NaN values, 0 infinite values across all 12 features)
+
+
