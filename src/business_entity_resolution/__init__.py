@@ -16,6 +16,18 @@ from .text_utils import (
     strip_punctuation,
     to_ascii,
 )
+from .blocking import (
+    build_default_strategies,
+    build_indexes_from_lists,
+    get_candidates,
+    generate_candidates,
+    ExactNormalizedNameBlock,
+    NameStemBlock,
+    NameTokenBlock,
+    CountryExactNameBlock,
+    AddressTokenBlock,
+    CountryNameStemBlock,
+)
 
 __all__ = [
     "clean_whitespace",
@@ -27,4 +39,14 @@ __all__ = [
     "normalize_address",
     "normalize_country",
     "normalize_record",
+    "build_default_strategies",
+    "build_indexes_from_lists",
+    "get_candidates",
+    "generate_candidates",
+    "ExactNormalizedNameBlock",
+    "NameStemBlock",
+    "NameTokenBlock",
+    "CountryExactNameBlock",
+    "AddressTokenBlock",
+    "CountryNameStemBlock",
 ]

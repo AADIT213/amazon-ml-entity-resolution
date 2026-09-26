@@ -217,3 +217,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Generated outputs & candidate TSVs
+output/
+candidate_pairs.tsv
+

@@ -86,3 +86,56 @@ All metrics recorded here are derived from real competition data. Per `AGENTS.md
 | Address | `3315 Fremont Street, Peoria, IL` | `3315 FREMONT SAINT, PEORIA, IL` | `3315 fremont st peoria il` | `3315 fremont st peoria il` | exact ✓ |
 | Address | `1795 Westchester Drive, High Point, NC` | *(null)* | `1795 westchester dr high point nc` | `""` | has_address=False |
 | Address | `11Th Floor, N1 Block Embassy, Bangalore` | `11Th Floor, N1 Block Embassy, Bangalore KA` | `11 fl n1 block embassy bangalore karnataka` | `11 fl n1 block embassy bangalore ka` | high overlap ✓ |
+
+---
+
+## Phase 3: Candidate Generation & Blocking (Final Model Set)
+
+- **Date**: 2026-09-26
+- **Branch**: `feat/blocking`
+- **Script**: `scripts/run_blocking.py`
+- **Output Files**: `output/candidate_pairs.tsv` (1,732,545 lines, 4.34 GB) & `candidate_pairs.tsv` (root copy)
+- **Test Suite**: `tests/test_blocking.py` (42/42 tests passing), total test suite 69/69 passing
+
+### 1. Final 7-Strategy Blocking Architecture
+The finalized blocking set achieves high recall while maintaining a compact index memory footprint (< 3 GB RAM) and fast execution (< 11 minutes for 1.73M entities against 9.97M records):
+1. **Exact Normalized Name Cross-Country**: `exact_name` (norm_n)
+2. **Country x Exact Name**: `country:name_norm`
+3. **Country x Name Stem**: `country:name_stem` (stem len >= 4, fast suffix stripping)
+4. **Country x Sorted Token Stem**: `country:sorted_stem` (order-invariant token matching)
+5. **Exact Normalized Address**: `exact_addr` (norm_a, len >= 8)
+6. **Country x Address Prefix**: `country:addr_prefix` (address prefix 14 chars)
+7. **Null-Address Fallback**: Name-stem candidate generation when address is absent
+
+### 2. Candidate Recall Benchmark (Training Ground Truth)
+- **Evaluated S1 Entities**: 2,206,821
+- **Ground Truth Matches**: 7,638,365
+- **Final Candidate Recall**: **75.40%**
+
+### 3. Test Set Candidate Generation Results
+- **Evaluated Test S1 Entities**: 1,732,544
+- **Total Generated Candidate Pairs**: 334,668,988
+- **Candidate Reduction Ratio**: **99.998062%**
+- **Average Candidates / S1**: **193.17**
+- **Median Candidates / S1**: **7.0**
+- **P75 Candidates / S1**: **52.0**
+- **P90 Candidates / S1**: **112.0**
+- **P95 Candidates / S1**: **353.0**
+- **P99 Candidates / S1**: **8,878.0**
+- **Max Candidates / S1**: **13,347**
+- **Zero-candidate S1 Count**: **39,449 (2.28%)**
+- **Test Candidate Generation Runtime**: **655.61s (~10.9 min)**
+
+#### Open-Set Country Breakdown (Test Split)
+| Country | Test S1 Count | Avg Candidates / S1 | Median Candidates | Zero-Candidate Count (%) |
+|---|---|---|---|---|
+| **France (Open-Set)** | 259,452 | 842.91 | 14 | 3,142 (1.21%) |
+| **US** | 663,106 | 39.40 | 5 | -- |
+| **India** | 809,986 | 110.92 | 10 | -- |
+
+### 4. Full Submission Contract Validation
+- **Validator Command**: `scripts/validate_submission.py --test-dir data/test --check-ids`
+- **Target File**: `output/candidate_pairs.tsv` (1,732,544 required S1 rows)
+- **Validation Result**: **PASS — no blocking issues found. Safe to submit.**
+- **ID Existence Check**: Verified all 334,668,988 candidate IDs against `test_source2.tsv` (4,887,273 rows) and `test_source3.tsv` (5,082,316 rows). 100% of candidate IDs exist and are valid.
+

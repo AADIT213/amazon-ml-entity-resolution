@@ -91,7 +91,7 @@ def load_match_targets(test_dir, warnings):
     return targets
 
 
-def validate_id_list_file(path, expected_header, col_label, required, valid_ids, errors):
+def validate_id_list_file(path, expected_header, col_label, required, valid_ids, errors, store_mapping=True):
     """Validate one results-style TSV (matching or candidate).
 
     Applies the shared formatting rules and appends any problems to ``errors``.
@@ -103,7 +103,7 @@ def validate_id_list_file(path, expected_header, col_label, required, valid_ids,
         return None
 
     name = os.path.basename(path)
-    mapping = {}
+    mapping = {} if store_mapping else None
     seen, dup_rows, intra_dupes = set(), set(), set()
     self_matches, wrong_prefix, unknown = set(), set(), set()
     n_rows = empties = 0
@@ -146,12 +146,14 @@ def validate_id_list_file(path, expected_header, col_label, required, valid_ids,
             ids = rest.rstrip("\n").split(",") if rest.strip() else []
             if not ids:
                 empties += 1
-                mapping[s1] = set()
+                if store_mapping:
+                    mapping[s1] = set()
                 continue
             if len(ids) != len(set(ids)):
                 intra_dupes.add(s1)
             id_set = set(ids)
-            mapping[s1] = id_set
+            if store_mapping:
+                mapping[s1] = id_set
             for mid in id_set:
                 if mid.startswith("S1-"):
                     self_matches.add(mid)
@@ -236,17 +238,26 @@ def validate(matching_path, candidate_path, test_dir, check_ids=False):
         )
 
     matched = validate_id_list_file(
-        matching_path, MATCHING_HEADER, "matched_entity_ids", required, valid_ids, errors
-    )
+        matching_path, MATCHING_HEADER, "matched_entity_ids", required, valid_ids, errors,
+        store_mapping=True,
+    ) if matching_path and os.path.isfile(matching_path) else None
+
+    if matching_path and not os.path.isfile(matching_path):
+        warnings.append(
+            f"{matching_path} not found — skipping matching_results.tsv checks. "
+            "(Required for final scoring submission)."
+        )
 
     # candidate_pairs.tsv is optional: if it's absent we skip its checks with a
     # warning (it's still expected in your final submission zip). A missing
     # candidate file never fails this run on its own.
     candidate = None
     if candidate_path and os.path.isfile(candidate_path):
+        # Do not keep entire 330M candidate mapping in memory unless matching file exists to check against
         candidate = validate_id_list_file(
             candidate_path, CANDIDATE_HEADER, "candidate_entity_ids",
             required, valid_ids, errors,
+            store_mapping=(matched is not None),
         )
     elif candidate_path:
         warnings.append(
@@ -292,7 +303,7 @@ def main():
     parser.add_argument(
         "--test-dir",
         "-t",
-        default="dataset/test",
+        default="data/test" if os.path.isdir("data/test") else "dataset/test",
         help="Folder with test_source1/2/3.tsv (default: %(default)s). "
         "test_source2/3.tsv are only read when --check-ids is given.",
     )
