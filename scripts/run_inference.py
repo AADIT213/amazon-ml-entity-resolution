@@ -695,28 +695,38 @@ def main():
     parser.add_argument("--threshold", type=float, default=0.90, help="Probability threshold for match")
     parser.add_argument("--smoke-benchmark-only", action="store_true", help="Run only the 10k controlled smoke benchmark")
     parser.add_argument("--build-db-only", action="store_true", help="Build SQLite entity database and exit")
+    parser.add_argument("--full-run", action="store_true", help="Execute full 334M test inference")
+    parser.add_argument("--skip-smoke", action="store_true", help="Skip smoke benchmark before full inference")
     args = parser.parse_args()
 
     if args.build_db_only:
         build_test_entity_sqlite(db_path=args.db_path, data_dir=args.data_dir)
         return
 
-    # Controlled Smoke Benchmark
-    smoke_results = run_smoke_benchmark(
-        model_path=args.model_path,
-        candidate_path=args.candidate_file,
-        data_dir=args.data_dir,
-        sample_pairs_limit=10000,
-        threshold=args.threshold,
-    )
+    # Step 1: Controlled Smoke Benchmark (unless skipped)
+    if not args.skip_smoke:
+        smoke_results = run_smoke_benchmark(
+            model_path=args.model_path,
+            candidate_path=args.candidate_file,
+            data_dir=args.data_dir,
+            sample_pairs_limit=10000,
+            threshold=args.threshold,
+        )
 
     if args.smoke_benchmark_only:
         return
 
-    # Full inference ONLY if explicitly requested (not smoke test)
-    # The default execution stops after smoke test per user instructions unless --smoke-benchmark-only is omitted
-    # But per user request: "DO NOT launch the full 334,668,988-pair inference after the smoke test. Stop and report the benchmark results for review."
-    print("Controlled smoke benchmark completed. Full inference requires explicit user approval.")
+    if args.full_run:
+        run_full_inference(
+            model_path=args.model_path,
+            candidate_path=args.candidate_file,
+            db_path=args.db_path,
+            data_dir=args.data_dir,
+            output_path=args.output,
+            threshold=args.threshold,
+        )
+    else:
+        print("Controlled smoke benchmark completed. To run full inference, pass --full-run.")
 
 
 if __name__ == "__main__":
